@@ -111,3 +111,4 @@ def fit_logistic_regression(X, Y, l2_penalty, tol=1e-7, theta_init=None):
         i += 1
 
     return theta
+
