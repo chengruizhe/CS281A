@@ -7,7 +7,7 @@
 
 # I think gpu:4 will request 4 of any kind of gpu per node,
 # and gpu:v100_32:8 should request 8 v100_32 per node
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:2
 #SBATCH --nodelist=zanino# if you need specific nodes
 #SBATCH -t 1-00:00 # time requested (D-HH:MM)
 
@@ -36,7 +36,8 @@ conda activate py37
 export PYTHONUNBUFFERED=1
 
 # do ALL the research
-srun python cifar.py -a resnet --depth 20 --epochs 60 --schedule 30 45 --gamma 0.1 --wd 1e-4 --gpu-id 0,1,2,3 --checkpoint checkpoints/cifar10/resnet-110
+srun python cifar.py -a resnet --depth 20 --epochs 60 --schedule 30 45 --gamma 0.1 --wd 1e-4 \
+--attack fgsm --epsilon 0.001 --steps 10 --gpu-id 0,1 --checkpoint checkpoints/exp1
 
 
 # print completion time

@@ -24,6 +24,8 @@ from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p, savefig
 
 from attacks.attacks import fgsm_attack, random_gaussian_attack
 from torch.utils.data import TensorDataset
+import pandas as pd
+import pickle
 
 model_names = sorted(name for name in models.__dict__
                      if name.islower() and not name.startswith("__")
@@ -35,7 +37,7 @@ parser.add_argument('-d', '--dataset', default='cifar10', type=str)
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 # Optimization options
-parser.add_argument('--epochs', default=300, type=int, metavar='N',
+parser.add_argument('--epochs', default=60, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -68,10 +70,6 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet20',
 parser.add_argument('--depth', type=int, default=29, help='Model depth.')
 parser.add_argument('--block-name', type=str, default='BasicBlock',
                     help='the building block for Resnet and Preresnet: BasicBlock, Bottleneck (default: Basicblock for cifar10/cifar100)')
-parser.add_argument('--cardinality', type=int, default=8, help='Model cardinality (group).')
-parser.add_argument('--widen-factor', type=int, default=4, help='Widen factor. 4 -> 64, 8 -> 128, ...')
-parser.add_argument('--growthRate', type=int, default=12, help='Growth rate for DenseNet.')
-parser.add_argument('--compressionRate', type=int, default=2, help='Compression Rate (theta) for DenseNet.')
 # Miscs
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
@@ -79,6 +77,11 @@ parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
 # Device options
 parser.add_argument('--gpu-id', default='0', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
+
+# RRM
+parser.add_argument('--attack', type=str, help='types of attack')
+parser.add_argument('--epsilon', type=float, help="epsilon in RRM")
+parser.add_argument('--steps', type=int, help="Number of steps in RRM")
 
 args = parser.parse_args()
 state = {k: v for k, v in args._get_kwargs()}
@@ -136,15 +139,7 @@ def main():
 
     # Model
     print("==> creating model '{}'".format(args.arch))
-    if args.arch.startswith('resnext'):
-        model = models.__dict__[args.arch](
-            cardinality=args.cardinality,
-            num_classes=num_classes,
-            depth=args.depth,
-            widen_factor=args.widen_factor,
-            dropRate=args.drop,
-        )
-    elif args.arch.endswith('resnet'):
+    if args.arch.endswith('resnet'):
         model = models.__dict__[args.arch](
             num_classes=num_classes,
             depth=args.depth,
@@ -185,46 +180,39 @@ def main():
     # Fit model to convergence first
     fit_till_converge(trainloader, testloader, model, criterion, optimizer, use_cuda)
 
-    num_steps = 10
+    metrics = []
+
     # Repeated risk minimization
-    for step in range(num_steps):
+    for step in range(args.steps):
         print("======= Steps {} ========".format(step))
-        loaders = perturbe_data(trainloader, testloader, model, criterion, "gaussian", use_cuda)
-        #loaders = perturbe_data(trainloader, testloader, model, criterion, "fgsm", use_cuda)
+        loaders = perturbe_data(trainloader, testloader, model, criterion, args.attack, use_cuda)
         trainloader, testloader = loaders[0], loaders[1]
 
-        loss_start, acc_start = test(testloader, model, criterion, 0, use_cuda)
-        fit_till_converge(trainloader, testloader, model, criterion, optimizer, use_cuda)
-        loss_end, acc_start = test(testloader, model, criterion, 0, use_cuda)
-        print("loss_start: {}, loss_end: {}", loss_start, loss_end)
-        
+        train_loss_start, train_acc_start = test(trainloader, model, criterion, 0, use_cuda)
+        test_loss_start, test_acc_start = test(testloader, model, criterion, 0, use_cuda)
 
-    # # Train and val
-    # for epoch in range(start_epoch, args.epochs):
-    #
-    #     train_loss, train_acc = train(trainloader, model, criterion, optimizer, epoch, use_cuda)
-    #     test_loss, test_acc = test(testloader, model, criterion, epoch, use_cuda)
-    #
-    #     # append logger file
-    #     logger.append([state['lr'], train_loss, test_loss, train_acc, test_acc])
-    #
-    #     # save model
-    #     is_best = test_acc > best_acc
-    #     best_acc = max(test_acc, best_acc)
-    #     save_checkpoint({
-    #         'epoch': epoch + 1,
-    #         'state_dict': model.state_dict(),
-    #         'acc': test_acc,
-    #         'best_acc': best_acc,
-    #         'optimizer': optimizer.state_dict(),
-    #     }, is_best, checkpoint=args.checkpoint)
-    #
-    # logger.close()
-    # logger.plot()
-    # savefig(os.path.join(args.checkpoint, 'log.eps'))
-    #
-    # print('Best acc:')
-    # print(best_acc)
+        fit_till_converge(trainloader, testloader, model, criterion, optimizer, use_cuda)
+
+        train_loss_end, train_acc_end = test(trainloader, model, criterion, 0, use_cuda)
+        test_loss_end, test_acc_end = test(testloader, model, criterion, 0, use_cuda)
+        curr_metric = [step, train_loss_start, train_loss_end, test_loss_start, test_loss_end, train_acc_start, train_acc_end, test_acc_start, test_acc_end]
+        metrics.append(curr_metric)
+
+    df = pd.DataFrame(metrics, columns=["step", "train_loss_start", "train_loss_end", "test_loss_start",
+                                        "test_loss_end", "train_acc_start", "train_acc_end", "test_acc_start",
+                                        "test_acc_end"])
+    params = {
+        "attack": args.attack,
+        "epsilon": args.epsilon,
+        "model": args.arch,
+        "depth": args.depth,
+        "epochs": args.epochs,
+        "schedule": args.schedule,
+        "steps": args.steps
+    }
+    with open(os.path.join(args.checkpoint, "params.pkl"), 'wb') as f:
+        pickle.dump(params, f, protocol=pickle.HIGHEST_PROTOCOL)
+    df.to_csv(os.path.join(args.checkpoint, "metrics.csv"))
 
 
 def fit_till_converge(trainloader, testloader, model, criterion, optimizer, use_cuda):
@@ -264,10 +252,10 @@ def perturbe_data(trainloader, testloader, model, criterion, attack, use_cuda):
 
             if attack == "fgsm":
                 data_grad = inputs.grad.data
-                perturbed_data = fgsm_attack(inputs, 0.1, data_grad)
+                perturbed_data = fgsm_attack(inputs, args.epsilon, data_grad)
 
             elif attack == "gaussian":
-                perturbed_data = random_gaussian_attack(inputs, epsilon=0.05)
+                perturbed_data = random_gaussian_attack(inputs, epsilon=args.epsilon)
             else:
                 perturbed_data = None
 
