@@ -37,7 +37,7 @@ export PYTHONUNBUFFERED=1
 
 # do ALL the research
 srun python cifar.py -a resnet --depth 20 --epochs 60 --schedule 30 45 --gamma 0.1 --wd 1e-4 \
---attack fgsm --epsilon 0.001 --steps 10 --gpu-id 0,1 --checkpoint checkpoints/exp1
+--attack gaussian --epsilon 0.5 --steps 10 --gpu-id 2,3 --checkpoint checkpoints/exp10
 
 
 # print completion time
